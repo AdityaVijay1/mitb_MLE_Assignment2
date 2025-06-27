@@ -57,11 +57,11 @@ def decide_pipeline_path(**context):
     initial_training_date = datetime(2024, 6, 1)
 
     if logical_date.replace(tzinfo=None) < initial_training_date:
-        return 'skip_run'
+        return 'skip_run_mleA2'
     elif logical_date.date() == initial_training_date.date():
-        return 'run_initial_training_flow'
+        return 'run_initial_training_flow_mleA2'
     else:
-        return 'run_monthly_lifecycle_flow'
+        return 'run_monthly_lifecycle_flow_mleA2'
 
 
 def check_retraining_trigger(**context):
@@ -90,10 +90,10 @@ def check_retraining_trigger(**context):
     
     if current_date in retraining_dates:
         print(f"[Trigger] Retraining triggered on {current_date.strftime('%Y-%m-%d')}")
-        return 'trigger_retraining'
+        return 'trigger_retraining_mleA2'
     else:
         print(f"[Trigger] No retraining needed on {current_date.strftime('%Y-%m-%d')}")
-        return 'skip_retraining'
+        return 'skip_retraining_mleA2'
 
 
 def extract_mlflow_run_id_from_logs(task_id: str = None, **context):
