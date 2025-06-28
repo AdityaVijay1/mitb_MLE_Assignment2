@@ -1,5 +1,7 @@
 # CS611 Assignment 2: Machine Learning Pipeline for Loan Default Prediction
 
+Link: https://github.com/AdityaVijay1/mitb_MLE_Assignment2.git
+
 ## Project Overview
 
 This project implements an end-to-end Machine Learning pipeline for predicting loan defaults at a financial institution. The pipeline includes data preprocessing, model training, inference, monitoring, and visualization capabilities, all orchestrated through Apache Airflow.
@@ -62,7 +64,6 @@ cs611_MLE_A2/
 ├── docker-compose.yaml            # Multi-container setup
 ├── Dockerfile                     # Container image definition
 ├── requirements.txt               # Python dependencies
-└── prometheus.yml                 # Prometheus configuration
 ```
 
 ## Data Sources
