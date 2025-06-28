@@ -230,10 +230,10 @@ def query_mlflow_for_run_info(model_type: str = None, **context) -> Tuple[Option
 
 def select_best_model_initial(**context):
     """
-    Extract results from both training tasks and select the best model.
-    This combines result extraction and model selection for efficiency.
+    Extract results from all three training tasks and select the best model.
+    Updated to include CatBoost alongside LightGBM and XGBoost.
     """
-    print("Extracting results from both training tasks and selecting best model...")
+    print("Extracting results from all three training tasks and selecting best model...")
     
     # Extract LightGBM results
     print("Extracting LightGBM results...")
@@ -252,16 +252,14 @@ def select_best_model_initial(**context):
     if xgboost_run_id is None or xgboost_f1 is None:
         print("XGBoost log extraction failed, querying MLflow directly...")
         xgboost_run_id, xgboost_f1 = query_mlflow_for_run_info(model_type='xgboost', **context)
-    if xgboost_run_id is None:
-        print("Warning: Could not get XGBoost run ID")
-        xgboost_run_id = "unknown"
-        xgboost_f1 = 0.0
-    if xgboost_f1 is None:
-        print("Warning: Could not get XGBoost Macro F1 score")
-        xgboost_f1 = 0.0
-    context['task_instance'].xcom_push(key='xgboost_run_id', value=xgboost_run_id)
-    context['task_instance'].xcom_push(key='xgboost_macro_f1', value=xgboost_f1)
-    print(f"XGBoost Run ID: {xgboost_run_id}, Macro F1: {xgboost_f1:.4f}")
+    
+    # Extract CatBoost results
+    print("Extracting CatBoost results...")
+    catboost_run_id = extract_mlflow_run_id_from_logs(task_id='train_catboost_initial_mleA2', **context)
+    catboost_f1 = extract_metrics_from_logs(task_id='train_catboost_initial_mleA2', **context)
+    if catboost_run_id is None or catboost_f1 is None:
+        print("CatBoost log extraction failed, querying MLflow directly...")
+        catboost_run_id, catboost_f1 = query_mlflow_for_run_info(model_type='catboost', **context)
     
     # Handle missing results
     if lightgbm_run_id is None:
@@ -269,37 +267,57 @@ def select_best_model_initial(**context):
         lightgbm_run_id = "unknown"
         lightgbm_f1 = 0.0
     
+    if xgboost_run_id is None:
+        print("Warning: Could not get XGBoost run ID")
+        xgboost_run_id = "unknown"
+        xgboost_f1 = 0.0
+    
+    if catboost_run_id is None:
+        print("Warning: Could not get CatBoost run ID")
+        catboost_run_id = "unknown"
+        catboost_f1 = 0.0
+    
     if lightgbm_f1 is None:
         print("Warning: Could not get LightGBM Macro F1 score")
         lightgbm_f1 = 0.0
     
+    if xgboost_f1 is None:
+        print("Warning: Could not get XGBoost Macro F1 score")
+        xgboost_f1 = 0.0
+    
+    if catboost_f1 is None:
+        print("Warning: Could not get CatBoost Macro F1 score")
+        catboost_f1 = 0.0
+    
     # Push individual results to XComs for debugging/auditing
     context['task_instance'].xcom_push(key='lightgbm_run_id', value=lightgbm_run_id)
     context['task_instance'].xcom_push(key='xgboost_run_id', value=xgboost_run_id)
+    context['task_instance'].xcom_push(key='catboost_run_id', value=catboost_run_id)
     context['task_instance'].xcom_push(key='lightgbm_macro_f1', value=lightgbm_f1)
     context['task_instance'].xcom_push(key='xgboost_macro_f1', value=xgboost_f1)
+    context['task_instance'].xcom_push(key='catboost_macro_f1', value=catboost_f1)
     
     print(f"LightGBM Run ID: {lightgbm_run_id}, Macro F1: {lightgbm_f1:.4f}")
     print(f"XGBoost Run ID: {xgboost_run_id}, Macro F1: {xgboost_f1:.4f}")
+    print(f"CatBoost Run ID: {catboost_run_id}, Macro F1: {catboost_f1:.4f}")
     
-    # Select best model
-    if lightgbm_f1 > xgboost_f1:
-        best_run_id = lightgbm_run_id
-        best_model_type = "LightGBM"
-        best_f1 = lightgbm_f1
-    else:
-        best_run_id = xgboost_run_id
-        best_model_type = "XGBoost"
-        best_f1 = xgboost_f1
+    # Select best model among all three
+    model_scores = [
+        (lightgbm_f1, lightgbm_run_id, "LightGBM"),
+        (xgboost_f1, xgboost_run_id, "XGBoost"),
+        (catboost_f1, catboost_run_id, "CatBoost")
+    ]
     
-    print(f"Selected {best_model_type} as best model with Macro F1: {best_f1:.4f}")
+    best_score, best_run_id, best_model_type = max(model_scores, key=lambda x: x[0])
+    
+    print(f"Selected {best_model_type} as best model with Macro F1: {best_score:.4f}")
     
     # Push best model info to XComs
     context['task_instance'].xcom_push(key='best_run_id', value=best_run_id)
     context['task_instance'].xcom_push(key='best_model_type', value=best_model_type)
-    context['task_instance'].xcom_push(key='best_macro_f1', value=best_f1)
+    context['task_instance'].xcom_push(key='best_macro_f1', value=best_score)
     
-    return f"Best model selected: {best_model_type} (Run ID: {best_run_id}, Macro F1: {best_f1:.4f})"
+    return f"Best model selected: {best_model_type} (Run ID: {best_run_id}, Macro F1: {best_score:.4f})"
 
 
 def register_model_initial(**context):
@@ -559,44 +577,83 @@ def run_model_inference(**context):
         # Calculate comprehensive metrics
         y_pred = model.predict(X)
         
-        # Handle probability prediction
+        # Initialize probability variable
         y_pred_proba = None
+        
+        # For binary classification, ensure y_pred contains binary values (0 or 1)
+        # and extract probabilities for AUC calculation
         if hasattr(model, 'predict_proba'):
             try:
-                y_pred_proba = model.predict_proba(X)
+                y_pred_proba_raw = model.predict_proba(X)
                 # For binary classification, we want the positive class probability
-                if y_pred_proba.shape[1] == 2:
-                    y_pred_proba = y_pred_proba[:, 1]
+                if y_pred_proba_raw.shape[1] == 2:
+                    y_pred_proba = y_pred_proba_raw[:, 1]
+                    # Convert probabilities to binary predictions using threshold 0.5
+                    y_pred = (y_pred_proba >= 0.5).astype(int)
+                else:
+                    y_pred_proba = y_pred_proba_raw.flatten()
+                    y_pred = (y_pred_proba >= 0.5).astype(int)
             except Exception as e:
                 print(f"[Inference] predict_proba failed: {e}")
-                y_pred_proba = None
+                # If predict_proba fails, try to convert y_pred to binary if it contains probabilities
+                if np.any((y_pred > 0) & (y_pred < 1)):
+                    y_pred_proba = y_pred.copy()  # Use original predictions as probabilities
+                    y_pred = (y_pred >= 0.5).astype(int)
         else:
             # Try to get probabilities from the underlying model
             try:
                 # For XGBoost pyfunc models
                 if hasattr(model, '_model_impl') and hasattr(model._model_impl, 'xgb_model'):
                     xgb_model = model._model_impl.xgb_model
-                    y_pred_proba = xgb_model.predict_proba(X)
-                    if y_pred_proba.shape[1] == 2:
-                        y_pred_proba = y_pred_proba[:, 1]
+                    y_pred_proba_raw = xgb_model.predict_proba(X)
+                    if y_pred_proba_raw.shape[1] == 2:
+                        y_pred_proba = y_pred_proba_raw[:, 1]
+                        y_pred = (y_pred_proba >= 0.5).astype(int)
+                    else:
+                        y_pred_proba = y_pred_proba_raw.flatten()
+                        y_pred = (y_pred_proba >= 0.5).astype(int)
                 # For LightGBM pyfunc models
                 elif hasattr(model, '_model_impl') and hasattr(model._model_impl, 'lgb_model'):
                     lgb_model = model._model_impl.lgb_model
-                    y_pred_proba = lgb_model.predict_proba(X)
-                    if y_pred_proba.shape[1] == 2:
-                        y_pred_proba = y_pred_proba[:, 1]
+                    y_pred_proba_raw = lgb_model.predict_proba(X)
+                    if y_pred_proba_raw.shape[1] == 2:
+                        y_pred_proba = y_pred_proba_raw[:, 1]
+                        y_pred = (y_pred_proba >= 0.5).astype(int)
+                    else:
+                        y_pred_proba = y_pred_proba_raw.flatten()
+                        y_pred = (y_pred_proba >= 0.5).astype(int)
                 # For CatBoost pyfunc models
                 elif hasattr(model, '_model_impl') and hasattr(model._model_impl, 'cb_model'):
                     cb_model = model._model_impl.cb_model
-                    y_pred_proba = cb_model.predict_proba(X)
-                    if y_pred_proba.shape[1] == 2:
-                        y_pred_proba = y_pred_proba[:, 1]
+                    y_pred_proba_raw = cb_model.predict_proba(X)
+                    if y_pred_proba_raw.shape[1] == 2:
+                        y_pred_proba = y_pred_proba_raw[:, 1]
+                        y_pred = (y_pred_proba >= 0.5).astype(int)
+                    else:
+                        y_pred_proba = y_pred_proba_raw.flatten()
+                        y_pred = (y_pred_proba >= 0.5).astype(int)
                 else:
                     print(f"[Inference] No known model type found for probability prediction")
-                    y_pred_proba = None
+                    # If y_pred contains probabilities, use them for AUC and convert to binary
+                    if np.any((y_pred > 0) & (y_pred < 1)):
+                        y_pred_proba = y_pred.copy()  # Use original predictions as probabilities
+                        y_pred = (y_pred >= 0.5).astype(int)
             except Exception as e:
                 print(f"[Inference] Could not get probabilities for AUC: {e}")
-                y_pred_proba = None
+                # If y_pred contains probabilities, use them for AUC and convert to binary
+                if np.any((y_pred > 0) & (y_pred < 1)):
+                    y_pred_proba = y_pred.copy()  # Use original predictions as probabilities
+                    y_pred = (y_pred >= 0.5).astype(int)
+        
+        # Debug logging for probability extraction
+        if y_pred_proba is not None:
+            print(f"[Inference] Successfully extracted probabilities for AUC calculation")
+            print(f"[Inference] Probability range: {y_pred_proba.min():.4f} to {y_pred_proba.max():.4f}")
+        else:
+            print(f"[Inference] No probabilities available for AUC calculation")
+        
+        # Debug logging for binary predictions
+        print(f"[Inference] Binary prediction distribution: {np.bincount(y_pred)}")
         
         comprehensive_metrics = calculate_comprehensive_metrics(
             y_true=y_encoded,
@@ -789,10 +846,10 @@ def train_lightgbm_monthly(**context):
 
 def select_best_model_monthly(**context):
     """
-    Extract results from both monthly training tasks and select the best model.
-    Same logic as initial training.
+    Extract results from all three monthly training tasks and select the best model.
+    Updated to include CatBoost alongside LightGBM and XGBoost.
     """
-    print("Extracting results from both monthly training tasks and selecting best model...")
+    print("Extracting results from all three monthly training tasks and selecting best model...")
     
     # Extract LightGBM results
     print("Extracting LightGBM results...")
@@ -814,299 +871,15 @@ def select_best_model_monthly(**context):
         print("XGBoost log extraction failed, querying MLflow directly...")
         xgboost_run_id, xgboost_f1 = query_mlflow_for_run_info(model_type='xgboost', **context)
     
-    # Handle missing results
-    if lightgbm_run_id is None:
-        print("Warning: Could not get LightGBM run ID")
-        lightgbm_run_id = "unknown"
-        lightgbm_f1 = 0.0
-    
-    if xgboost_run_id is None:
-        print("Warning: Could not get XGBoost run ID")
-        xgboost_run_id = "unknown"
-        xgboost_f1 = 0.0
-    
-    if lightgbm_f1 is None:
-        print("Warning: Could not get LightGBM Macro F1 score")
-        lightgbm_f1 = 0.0
-    
-    if xgboost_f1 is None:
-        print("Warning: Could not get XGBoost Macro F1 score")
-        xgboost_f1 = 0.0
-    
-    # Push individual results to XComs for debugging/auditing
-    context['task_instance'].xcom_push(key='lightgbm_run_id_monthly', value=lightgbm_run_id)
-    context['task_instance'].xcom_push(key='xgboost_run_id_monthly', value=xgboost_run_id)
-    context['task_instance'].xcom_push(key='lightgbm_macro_f1_monthly', value=lightgbm_f1)
-    context['task_instance'].xcom_push(key='xgboost_macro_f1_monthly', value=xgboost_f1)
-    
-    print(f"LightGBM Run ID: {lightgbm_run_id}, Macro F1: {lightgbm_f1:.4f}")
-    print(f"XGBoost Run ID: {xgboost_run_id}, Macro F1: {xgboost_f1:.4f}")
-    
-    # Select best model
-    if lightgbm_f1 > xgboost_f1:
-        best_run_id = lightgbm_run_id
-        best_model_type = "LightGBM"
-        best_f1 = lightgbm_f1
-    else:
-        best_run_id = xgboost_run_id
-        best_model_type = "XGBoost"
-        best_f1 = xgboost_f1
-    
-    print(f"Selected {best_model_type} as best monthly model with Macro F1: {best_f1:.4f}")
-    
-    # Push best model info to XComs
-    context['task_instance'].xcom_push(key='best_run_id_monthly', value=best_run_id)
-    context['task_instance'].xcom_push(key='best_model_type_monthly', value=best_model_type)
-    context['task_instance'].xcom_push(key='best_macro_f1_monthly', value=best_f1)
-    
-    return f"Best monthly model selected: {best_model_type} (Run ID: {best_run_id}, Macro F1: {best_f1:.4f})"
-
-
-def register_model_monthly(**context):
-    """
-    Register the best monthly model to MLflow Model Registry and promote to Production.
-    Same logic as initial registration but updates retraining tracker.
-    """
-    # Get best model info from XComs
-    best_run_id = context['task_instance'].xcom_pull(key='best_run_id_monthly')
-    best_model_type = context['task_instance'].xcom_pull(key='best_model_type_monthly')
-    best_f1 = context['task_instance'].xcom_pull(key='best_macro_f1_monthly')
-    
-    print(f"Registering {best_model_type} monthly model (Run ID: {best_run_id}) to MLflow Registry")
-    
-    # Set up MLflow
-    mlflow.set_tracking_uri("http://mlflow:5000")
-    
-    # Get the model URI from the run
-    model_uri = f"runs:/{best_run_id}/model"
-    
-    # Register the model (creates new version)
-    model_name = "credit_scoring_model"
-    model_version = mlflow.register_model(
-        model_uri=model_uri,
-        name=model_name
-    )
-    
-    # Transition to Production
-    client = mlflow.tracking.MlflowClient()
-    client.transition_model_version_stage(
-        name=model_name,
-        version=model_version.version,
-        stage="Production"
-    )
-    
-    print(f"Monthly model registered successfully: {model_name} v{model_version.version}")
-    print(f"Model promoted to Production stage")
-    
-    # Update retraining tracker with current date (resets 90-day timer)
-    retraining_tracker_path = "/opt/airflow/logs/last_retraining_date.json"
-    tracker_data = {
-        'last_retraining_date': context['logical_date'].strftime('%Y-%m-%d'),
-        'model_name': model_name,
-        'model_version': model_version.version,
-        'model_type': best_model_type,
-        'macro_f1_score': best_f1,
-        'registration_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'retraining_type': 'monthly'
-    }
-    
-    os.makedirs(os.path.dirname(retraining_tracker_path), exist_ok=True)
-    with open(retraining_tracker_path, 'w') as f:
-        json.dump(tracker_data, f, indent=2)
-    
-    print(f"Retraining tracker updated: {retraining_tracker_path}")
-    
-    return f"Monthly model registered and promoted to Production: {model_name} v{model_version.version}"
-
-
-def train_lightgbm_initial(**context):
-    import lightgbm as lgb
-    from sklearn.model_selection import train_test_split
-    from sklearn.metrics import roc_auc_score
-    import mlflow
-    import os
-    import pandas as pd
-    from pyspark.sql import SparkSession
-
-    # 1. Load data (same logic as your notebook)
-    spark = SparkSession.builder.appName("LightGBMInitialTraining").getOrCreate()
-    start_date = "2023-07-01"
-    end_date = "2024-06-01"
-    feature_dir = "/opt/airflow/scripts/datamart/gold/feature_store"
-    label_dir = "/opt/airflow/scripts/datamart/gold/label_store"
-
-    def get_files_in_range(folder, prefix, start_date, end_date):
-        files = []
-        for fname in os.listdir(folder):
-            if fname.startswith(prefix) and fname.endswith('.parquet'):
-                date_str = fname.replace(prefix, '').replace('.parquet', '').replace('_', '-')
-                if start_date <= date_str <= end_date:
-                    files.append(os.path.join(folder, fname))
-        return sorted(files)
-
-    feature_files = get_files_in_range(feature_dir, "gold_feature_store_", start_date, end_date)
-    label_files = get_files_in_range(label_dir, "gold_label_store_", start_date, end_date)
-    df_features = spark.read.parquet(*feature_files)
-    df_labels = spark.read.parquet(*label_files)
-    df = df_features.join(
-        df_labels.select("loan_id", "label", "snapshot_date"),
-        on=["loan_id"],
-        how="inner"
-    )
-    df_pd = df.toPandas()
-    spark.stop()
-
-    # 2. Prepare features and label
-    label_col = 'label'
-    exclude_cols = ['loan_id', 'snapshot_date', label_col]
-    feature_cols = [c for c in df_pd.columns if c not in exclude_cols]
-    X = df_pd[feature_cols]
-    y = df_pd[label_col]
-
-    # 3. Train/test split
-    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
-
-    # 4. Train LightGBM
-    params = {
-        'objective': 'binary',
-        'metric': 'auc',
-        'boosting_type': 'gbdt',
-        'max_depth': 4,
-        'learning_rate': 0.1,
-        'n_estimators': 150,
-        'num_leaves': 20,
-        'subsample': 0.8,
-        'colsample_bytree': 0.8,
-        'random_state': 42,
-        'verbose': -1
-    }
-    train_data = lgb.Dataset(X_train, label=y_train)
-    val_data = lgb.Dataset(X_val, label=y_val)
-    model = lgb.train(
-        params,
-        train_data,
-        valid_sets=[train_data, val_data],
-        num_boost_round=100
-    )
-
-    # 5. Evaluate
-    y_pred = model.predict(X_val)
-    auc = roc_auc_score(y_val, y_pred)
-    print(f"Validation AUC: {auc:.4f}")
-
-    # 6. Log to MLflow
-    mlflow.set_tracking_uri("http://mlflow:5000")
-    mlflow.set_experiment("loandefault_mle2")
-    with mlflow.start_run(run_name="lightgbm_initial"):
-        mlflow.log_params(params)
-        mlflow.log_metric("auc", auc)
-        mlflow.lightgbm.log_model(model, "model")
-        mlflow.log_param("feature_names", feature_cols)
-    print("LightGBM initial model training and logging complete.")
-
-
-def train_xgboost_monthly(**context):
-    from xgboost import XGBClassifier
-    from sklearn.model_selection import train_test_split
-    from sklearn.metrics import roc_auc_score
-    import mlflow
-    import os
-    import pandas as pd
-    from pyspark.sql import SparkSession
-    from datetime import datetime
-    from dateutil.relativedelta import relativedelta
-
-    # 1. Get rolling 12-month window ending previous month
-    month_date = context['logical_date'].strftime('%Y_%m_%d')
-    training_months = get_training_data_window(month_date)
-    feature_dir = "/opt/airflow/scripts/datamart/gold/feature_store"
-    label_dir = "/opt/airflow/scripts/datamart/gold/label_store"
-
-    def get_files_for_months(folder, prefix, months):
-        files = []
-        for m in months:
-            fname = f"{prefix}{m}.parquet"
-            fpath = os.path.join(folder, fname)
-            if os.path.exists(fpath):
-                files.append(fpath)
-        return sorted(files)
-
-    feature_files = get_files_for_months(feature_dir, "gold_feature_store_", training_months)
-    label_files = get_files_for_months(label_dir, "gold_label_store_", training_months)
-    spark = SparkSession.builder.appName("XGBoostMonthlyTraining").getOrCreate()
-    df_features = spark.read.parquet(*feature_files)
-    df_labels = spark.read.parquet(*label_files)
-    df = df_features.join(
-        df_labels.select("loan_id", "label", "snapshot_date"),
-        on=["loan_id"],
-        how="inner"
-    )
-    df_pd = df.toPandas()
-    spark.stop()
-
-    # 2. Prepare features and label
-    label_col = 'label'
-    exclude_cols = ['loan_id', 'snapshot_date', label_col]
-    feature_cols = [c for c in df_pd.columns if c not in exclude_cols]
-    X = df_pd[feature_cols]
-    y = df_pd[label_col]
-
-    # 3. Train/test split
-    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
-
-    # 4. Train XGBoost
-    params = {
-        'objective': 'binary:logistic',
-        'max_depth': 4,
-        'learning_rate': 0.1,
-        'n_estimators': 150,
-        'eval_metric': 'auc'
-    }
-    model = XGBClassifier(**params)
-    model.fit(X_train, y_train)
-
-    # 5. Evaluate
-    y_pred = model.predict(X_val)
-    auc = roc_auc_score(y_val, y_pred)
-    print(f"XGBoost Validation AUC: {auc:.4f}")
-
-    # 6. Log to MLflow
-    mlflow.set_tracking_uri("http://mlflow:5000")
-    mlflow.set_experiment("loandefault_mle2")
-    with mlflow.start_run(run_name="xgboost_monthly"):
-        mlflow.log_params(params)
-        mlflow.log_metric("auc", auc)
-        mlflow.xgboost.log_model(model, "model")
-        mlflow.log_param("feature_names", feature_cols)
-    print("XGBoost monthly model training and logging complete.")
-
-
-def select_best_model_monthly(**context):
-    """
-    Extract results from both monthly training tasks and select the best model.
-    Same logic as initial training.
-    """
-    print("Extracting results from both monthly training tasks and selecting best model...")
-    
-    # Extract LightGBM results
-    print("Extracting LightGBM results...")
-    lightgbm_run_id = extract_mlflow_run_id_from_logs(task_id='train_lightgbm_monthly_mleA2', **context)
-    lightgbm_f1 = extract_metrics_from_logs(task_id='train_lightgbm_monthly_mleA2', **context)
+    # Extract CatBoost results
+    print("Extracting CatBoost results...")
+    catboost_run_id = extract_mlflow_run_id_from_logs(task_id='train_catboost_monthly_mleA2', **context)
+    catboost_f1 = extract_metrics_from_logs(task_id='train_catboost_monthly_mleA2', **context)
     
     # If extraction failed, query MLflow
-    if lightgbm_run_id is None or lightgbm_f1 is None:
-        print("LightGBM log extraction failed, querying MLflow directly...")
-        lightgbm_run_id, lightgbm_f1 = query_mlflow_for_run_info(model_type='lightgbm', **context)
-    
-    # Extract XGBoost results
-    print("Extracting XGBoost results...")
-    xgboost_run_id = extract_mlflow_run_id_from_logs(task_id='train_xgboost_monthly_mleA2', **context)
-    xgboost_f1 = extract_metrics_from_logs(task_id='train_xgboost_monthly_mleA2', **context)
-    
-    # If extraction failed, query MLflow
-    if xgboost_run_id is None or xgboost_f1 is None:
-        print("XGBoost log extraction failed, querying MLflow directly...")
-        xgboost_run_id, xgboost_f1 = query_mlflow_for_run_info(model_type='xgboost', **context)
+    if catboost_run_id is None or catboost_f1 is None:
+        print("CatBoost log extraction failed, querying MLflow directly...")
+        catboost_run_id, catboost_f1 = query_mlflow_for_run_info(model_type='catboost', **context)
     
     # Handle missing results
     if lightgbm_run_id is None:
@@ -1119,6 +892,11 @@ def select_best_model_monthly(**context):
         xgboost_run_id = "unknown"
         xgboost_f1 = 0.0
     
+    if catboost_run_id is None:
+        print("Warning: Could not get CatBoost run ID")
+        catboost_run_id = "unknown"
+        catboost_f1 = 0.0
+    
     if lightgbm_f1 is None:
         print("Warning: Could not get LightGBM Macro F1 score")
         lightgbm_f1 = 0.0
@@ -1127,33 +905,39 @@ def select_best_model_monthly(**context):
         print("Warning: Could not get XGBoost Macro F1 score")
         xgboost_f1 = 0.0
     
+    if catboost_f1 is None:
+        print("Warning: Could not get CatBoost Macro F1 score")
+        catboost_f1 = 0.0
+    
     # Push individual results to XComs for debugging/auditing
     context['task_instance'].xcom_push(key='lightgbm_run_id_monthly', value=lightgbm_run_id)
     context['task_instance'].xcom_push(key='xgboost_run_id_monthly', value=xgboost_run_id)
+    context['task_instance'].xcom_push(key='catboost_run_id_monthly', value=catboost_run_id)
     context['task_instance'].xcom_push(key='lightgbm_macro_f1_monthly', value=lightgbm_f1)
     context['task_instance'].xcom_push(key='xgboost_macro_f1_monthly', value=xgboost_f1)
+    context['task_instance'].xcom_push(key='catboost_macro_f1_monthly', value=catboost_f1)
     
     print(f"LightGBM Run ID: {lightgbm_run_id}, Macro F1: {lightgbm_f1:.4f}")
     print(f"XGBoost Run ID: {xgboost_run_id}, Macro F1: {xgboost_f1:.4f}")
+    print(f"CatBoost Run ID: {catboost_run_id}, Macro F1: {catboost_f1:.4f}")
     
-    # Select best model
-    if lightgbm_f1 > xgboost_f1:
-        best_run_id = lightgbm_run_id
-        best_model_type = "LightGBM"
-        best_f1 = lightgbm_f1
-    else:
-        best_run_id = xgboost_run_id
-        best_model_type = "XGBoost"
-        best_f1 = xgboost_f1
+    # Select best model among all three
+    model_scores = [
+        (lightgbm_f1, lightgbm_run_id, "LightGBM"),
+        (xgboost_f1, xgboost_run_id, "XGBoost"),
+        (catboost_f1, catboost_run_id, "CatBoost")
+    ]
     
-    print(f"Selected {best_model_type} as best monthly model with Macro F1: {best_f1:.4f}")
+    best_score, best_run_id, best_model_type = max(model_scores, key=lambda x: x[0])
+    
+    print(f"Selected {best_model_type} as best monthly model with Macro F1: {best_score:.4f}")
     
     # Push best model info to XComs
     context['task_instance'].xcom_push(key='best_run_id_monthly', value=best_run_id)
     context['task_instance'].xcom_push(key='best_model_type_monthly', value=best_model_type)
-    context['task_instance'].xcom_push(key='best_macro_f1_monthly', value=best_f1)
+    context['task_instance'].xcom_push(key='best_macro_f1_monthly', value=best_score)
     
-    return f"Best monthly model selected: {best_model_type} (Run ID: {best_run_id}, Macro F1: {best_f1:.4f})"
+    return f"Best monthly model selected: {best_model_type} (Run ID: {best_run_id}, Macro F1: {best_score:.4f})"
 
 
 def register_model_monthly(**context):
@@ -1307,25 +1091,277 @@ def train_xgboost_initial(**context):
     import os
     import pandas as pd
     from pyspark.sql import SparkSession
+    from datetime import datetime
+    from dateutil.relativedelta import relativedelta
 
-    # 1. Load data (same logic as above)
-    spark = SparkSession.builder.appName("XGBoostInitialTraining").getOrCreate()
-    start_date = "2023-07-01"
-    end_date = "2024-06-01"
+    # 1. Get initial training data (12 months ending May 2024)
+    start_date = datetime(2023, 6, 1)
+    end_date = datetime(2024, 5, 1)
     feature_dir = "/opt/airflow/scripts/datamart/gold/feature_store"
     label_dir = "/opt/airflow/scripts/datamart/gold/label_store"
 
     def get_files_in_range(folder, prefix, start_date, end_date):
         files = []
-        for fname in os.listdir(folder):
-            if fname.startswith(prefix) and fname.endswith('.parquet'):
-                date_str = fname.replace(prefix, '').replace('.parquet', '').replace('_', '-')
-                if start_date <= date_str <= end_date:
-                    files.append(os.path.join(folder, fname))
+        current_date = start_date
+        while current_date <= end_date:
+            fname = f"{prefix}{current_date.strftime('%Y_%m_%d')}.parquet"
+            fpath = os.path.join(folder, fname)
+            if os.path.exists(fpath):
+                files.append(fpath)
+            current_date += relativedelta(months=1)
         return sorted(files)
 
     feature_files = get_files_in_range(feature_dir, "gold_feature_store_", start_date, end_date)
     label_files = get_files_in_range(label_dir, "gold_label_store_", start_date, end_date)
+    spark = SparkSession.builder.appName("XGBoostInitialTraining").getOrCreate()
+    df_features = spark.read.parquet(*feature_files)
+    df_labels = spark.read.parquet(*label_files)
+    df = df_features.join(
+        df_labels.select("loan_id", "label", "snapshot_date"),
+        on=["loan_id"],
+        how="inner"
+    )
+    df_pd = df.toPandas()
+    spark.stop()
+
+    # 2. Prepare features and label
+    label_col = 'label'
+    exclude_cols = ['loan_id', 'snapshot_date', label_col]
+    feature_cols = [c for c in df_pd.columns if c not in exclude_cols]
+    X = df_pd[feature_cols]
+    y = df_pd[label_col]
+
+    # 3. Train/test split
+    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    # 4. Train XGBoost
+    params = {
+        'objective': 'binary:logistic',
+        'max_depth': 4,
+        'learning_rate': 0.1,
+        'n_estimators': 150,
+        'eval_metric': 'auc'
+    }
+    model = XGBClassifier(**params)
+    model.fit(X_train, y_train)
+
+    # 5. Evaluate
+    y_pred = model.predict(X_val)
+    auc = roc_auc_score(y_val, y_pred)
+    print(f"XGBoost Initial Validation AUC: {auc:.4f}")
+
+    # 6. Log to MLflow
+    mlflow.set_tracking_uri("http://mlflow:5000")
+    mlflow.set_experiment("loandefault_mle2")
+    with mlflow.start_run(run_name="xgboost_initial"):
+        mlflow.log_params(params)
+        mlflow.log_metric("auc", auc)
+        mlflow.xgboost.log_model(model, "model")
+        mlflow.log_param("feature_names", feature_cols)
+    print("XGBoost initial model training and logging complete.")
+
+
+def train_catboost_monthly(**context):
+    import catboost as cb
+    from sklearn.model_selection import train_test_split
+    from sklearn.metrics import roc_auc_score
+    import mlflow
+    import os
+    import pandas as pd
+    from pyspark.sql import SparkSession
+    from datetime import datetime
+    from dateutil.relativedelta import relativedelta
+
+    # 1. Get rolling 12-month window ending previous month
+    month_date = context['logical_date'].strftime('%Y_%m_%d')
+    training_months = get_training_data_window(month_date)
+    feature_dir = "/opt/airflow/scripts/datamart/gold/feature_store"
+    label_dir = "/opt/airflow/scripts/datamart/gold/label_store"
+
+    def get_files_for_months(folder, prefix, months):
+        files = []
+        for m in months:
+            fname = f"{prefix}{m}.parquet"
+            fpath = os.path.join(folder, fname)
+            if os.path.exists(fpath):
+                files.append(fpath)
+        return sorted(files)
+
+    feature_files = get_files_for_months(feature_dir, "gold_feature_store_", training_months)
+    label_files = get_files_for_months(label_dir, "gold_label_store_", training_months)
+    spark = SparkSession.builder.appName("CatBoostMonthlyTraining").getOrCreate()
+    df_features = spark.read.parquet(*feature_files)
+    df_labels = spark.read.parquet(*label_files)
+    df = df_features.join(
+        df_labels.select("loan_id", "label", "snapshot_date"),
+        on=["loan_id"],
+        how="inner"
+    )
+    df_pd = df.toPandas()
+    spark.stop()
+
+    # 2. Prepare features and label
+    label_col = 'label'
+    exclude_cols = ['loan_id', 'snapshot_date', label_col]
+    feature_cols = [c for c in df_pd.columns if c not in exclude_cols]
+    X = df_pd[feature_cols]
+    y = df_pd[label_col]
+
+    # 3. Train/test split
+    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    # 4. Train CatBoost
+    # Create a writable directory for CatBoost
+    train_dir = "/tmp/catboost_monthly_training"
+    os.makedirs(train_dir, exist_ok=True)
+    
+    params = {
+        'iterations': 100,
+        'learning_rate': 0.1,
+        'depth': 6,
+        'l2_leaf_reg': 3,
+        'loss_function': 'Logloss',
+        'eval_metric': 'AUC',
+        'random_seed': 42,
+        'verbose': False,
+        'task_type': 'CPU',
+        'train_dir': train_dir
+    }
+    model = cb.CatBoostClassifier(**params)
+    model.fit(X_train, y_train, eval_set=(X_val, y_val), early_stopping_rounds=15, verbose=False)
+
+    # 5. Evaluate
+    y_pred = model.predict(X_val)
+    auc = roc_auc_score(y_val, y_pred)
+    print(f"CatBoost Validation AUC: {auc:.4f}")
+
+    # 6. Log to MLflow
+    mlflow.set_tracking_uri("http://mlflow:5000")
+    mlflow.set_experiment("loandefault_mle2")
+    with mlflow.start_run(run_name="catboost_monthly"):
+        mlflow.log_params(params)
+        mlflow.log_metric("auc", auc)
+        mlflow.sklearn.log_model(model, "model")
+        mlflow.log_param("feature_names", feature_cols)
+    print("CatBoost monthly model training and logging complete.")
+
+
+def train_catboost_initial(**context):
+    import catboost as cb
+    from sklearn.model_selection import train_test_split
+    from sklearn.metrics import roc_auc_score
+    import mlflow
+    import os
+    import pandas as pd
+    from pyspark.sql import SparkSession
+    from datetime import datetime
+    from dateutil.relativedelta import relativedelta
+
+    # 1. Get initial training data (12 months ending May 2024)
+    start_date = datetime(2023, 6, 1)
+    end_date = datetime(2024, 5, 1)
+    feature_dir = "/opt/airflow/scripts/datamart/gold/feature_store"
+    label_dir = "/opt/airflow/scripts/datamart/gold/label_store"
+
+    def get_files_in_range(folder, prefix, start_date, end_date):
+        files = []
+        current_date = start_date
+        while current_date <= end_date:
+            fname = f"{prefix}{current_date.strftime('%Y_%m_%d')}.parquet"
+            fpath = os.path.join(folder, fname)
+            if os.path.exists(fpath):
+                files.append(fpath)
+            current_date += relativedelta(months=1)
+        return sorted(files)
+
+    feature_files = get_files_in_range(feature_dir, "gold_feature_store_", start_date, end_date)
+    label_files = get_files_in_range(label_dir, "gold_label_store_", start_date, end_date)
+    spark = SparkSession.builder.appName("CatBoostInitialTraining").getOrCreate()
+    df_features = spark.read.parquet(*feature_files)
+    df_labels = spark.read.parquet(*label_files)
+    df = df_features.join(
+        df_labels.select("loan_id", "label", "snapshot_date"),
+        on=["loan_id"],
+        how="inner"
+    )
+    df_pd = df.toPandas()
+    spark.stop()
+
+    # 2. Prepare features and label
+    label_col = 'label'
+    exclude_cols = ['loan_id', 'snapshot_date', label_col]
+    feature_cols = [c for c in df_pd.columns if c not in exclude_cols]
+    X = df_pd[feature_cols]
+    y = df_pd[label_col]
+
+    # 3. Train/test split
+    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    # 4. Train CatBoost
+    # Create a writable directory for CatBoost
+    train_dir = "/tmp/catboost_initial_training"
+    os.makedirs(train_dir, exist_ok=True)
+    
+    params = {
+        'iterations': 100,
+        'learning_rate': 0.1,
+        'depth': 6,
+        'l2_leaf_reg': 3,
+        'loss_function': 'Logloss',
+        'eval_metric': 'AUC',
+        'random_seed': 42,
+        'verbose': False,
+        'task_type': 'CPU',
+        'train_dir': train_dir
+    }
+    model = cb.CatBoostClassifier(**params)
+    model.fit(X_train, y_train, eval_set=(X_val, y_val), early_stopping_rounds=15, verbose=False)
+
+    # 5. Evaluate
+    y_pred = model.predict(X_val)
+    auc = roc_auc_score(y_val, y_pred)
+    print(f"CatBoost Initial Validation AUC: {auc:.4f}")
+
+    # 6. Log to MLflow
+    mlflow.set_tracking_uri("http://mlflow:5000")
+    mlflow.set_experiment("loandefault_mle2")
+    with mlflow.start_run(run_name="catboost_initial"):
+        mlflow.log_params(params)
+        mlflow.log_metric("auc", auc)
+        mlflow.sklearn.log_model(model, "model")
+        mlflow.log_param("feature_names", feature_cols)
+    print("CatBoost initial model training and logging complete.")
+
+
+def train_xgboost_monthly(**context):
+    from xgboost import XGBClassifier
+    from sklearn.model_selection import train_test_split
+    from sklearn.metrics import roc_auc_score
+    import mlflow
+    import os
+    import pandas as pd
+    from pyspark.sql import SparkSession
+    from datetime import datetime
+    from dateutil.relativedelta import relativedelta
+
+    # 1. Get rolling 12-month window ending previous month
+    month_date = context['logical_date'].strftime('%Y_%m_%d')
+    training_months = get_training_data_window(month_date)
+    feature_dir = "/opt/airflow/scripts/datamart/gold/feature_store"
+    label_dir = "/opt/airflow/scripts/datamart/gold/label_store"
+
+    def get_files_for_months(folder, prefix, months):
+        files = []
+        for m in months:
+            fname = f"{prefix}{m}.parquet"
+            fpath = os.path.join(folder, fname)
+            if os.path.exists(fpath):
+                files.append(fpath)
+        return sorted(files)
+
+    feature_files = get_files_for_months(feature_dir, "gold_feature_store_", training_months)
+    label_files = get_files_for_months(label_dir, "gold_label_store_", training_months)
+    spark = SparkSession.builder.appName("XGBoostMonthlyTraining").getOrCreate()
     df_features = spark.read.parquet(*feature_files)
     df_labels = spark.read.parquet(*label_files)
     df = df_features.join(
@@ -1365,12 +1401,12 @@ def train_xgboost_initial(**context):
     # 6. Log to MLflow
     mlflow.set_tracking_uri("http://mlflow:5000")
     mlflow.set_experiment("loandefault_mle2")
-    with mlflow.start_run(run_name="xgboost_initial"):
+    with mlflow.start_run(run_name="xgboost_monthly"):
         mlflow.log_params(params)
         mlflow.log_metric("auc", auc)
         mlflow.xgboost.log_model(model, "model")
         mlflow.log_param("feature_names", feature_cols)
-    print("XGBoost initial model training and logging complete.")
+    print("XGBoost monthly model training and logging complete.")
 
 
 # === Streamlined Data Pipeline Functions ===

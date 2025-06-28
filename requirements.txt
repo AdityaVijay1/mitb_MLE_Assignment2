@@ -21,6 +21,7 @@ statsd>=4.0.1
 
 # Additional ML Libraries
 lightgbm>=4.0.0
+catboost>=1.2.0
 
 # Data Validation
 great-expectations>=0.17.0

@@ -169,15 +169,18 @@ services:
 
   # Grafana for metrics visualization (optional)
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:9.5.2
     ports:
       - "3000:3000"
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_USER=admin
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
     depends_on:
       - prometheus
+    restart: unless-stopped
 
   pgadmin:
     image: dpage/pgadmin4

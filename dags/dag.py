@@ -1,6 +1,7 @@
 from airflow import DAG
 from airflow.operators.dummy import DummyOperator
-from airflow.operators.python import BranchPythonOperator, PythonOperator
+from airflow.operators.python import PythonOperator
+from airflow.operators.branch import BranchPythonOperator
 from airflow.operators.bash import BashOperator
 from airflow.sensors.filesystem import FileSensor
 from airflow.sensors.external_task import ExternalTaskSensor
@@ -29,10 +30,12 @@ from dag_functions import (
     run_model_inference,
     train_lightgbm_monthly,
     train_xgboost_monthly,
+    train_catboost_monthly,
     select_best_model_monthly,
     register_model_monthly,
     train_lightgbm_initial,
     train_xgboost_initial,
+    train_catboost_initial,
     process_all_bronze_tables,
     process_all_silver_tables,
     process_all_gold_tables
@@ -178,6 +181,10 @@ with DAG(
         task_id='train_xgboost_initial_mleA2',
         python_callable=train_xgboost_initial,
     )
+    train_catboost_initial = PythonOperator(
+        task_id='train_catboost_initial_mleA2',
+        python_callable=train_catboost_initial,
+    )
     select_best_model_initial_task = PythonOperator(
         task_id='select_best_model_initial_mleA2',
         python_callable=select_best_model_initial,
@@ -206,6 +213,10 @@ with DAG(
     train_xgboost_monthly_task = PythonOperator(
         task_id='train_xgboost_monthly_mleA2',
         python_callable=train_xgboost_monthly,
+    )
+    train_catboost_monthly_task = PythonOperator(
+        task_id='train_catboost_monthly_mleA2',
+        python_callable=train_catboost_monthly,
     )
     select_best_model_monthly_task = PythonOperator(
         task_id='select_best_model_monthly_mleA2',
@@ -237,7 +248,7 @@ with DAG(
 
     # Path 2: Initial Training
     decide_pipeline_path_task >> run_initial_training_flow
-    run_initial_training_flow >> train_lightgbm_initial >> train_xgboost_initial >> select_best_model_initial_task >> register_model_initial_task >> end
+    run_initial_training_flow >> train_lightgbm_initial >> train_xgboost_initial >> train_catboost_initial >> select_best_model_initial_task >> register_model_initial_task >> end
 
     # Path 3: Monthly Lifecycle
     decide_pipeline_path_task >> run_monthly_lifecycle_flow
@@ -248,7 +259,7 @@ with DAG(
     check_retraining_trigger_task >> trigger_retraining
 
     # Retraining sub-path
-    trigger_retraining >> train_lightgbm_monthly_task >> train_xgboost_monthly_task >> select_best_model_monthly_task >> register_model_monthly_task
+    trigger_retraining >> train_lightgbm_monthly_task >> train_xgboost_monthly_task >> train_catboost_monthly_task >> select_best_model_monthly_task >> register_model_monthly_task
     register_model_monthly_task >> run_model_inference_task
 
     # Inference is the final step for the monthly path
